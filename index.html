@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Neon Cube Runner</title>
+<style>
+  html,body{height:100%;margin:0;background:#0b1220;color:#fff;font-family:Inter,Arial}
+  #overlay{
+    position:fixed;left:12px;top:12px;z-index:10;
+    background:rgba(0,0,0,0.4);padding:10px;border-radius:8px;
+    font-size:14px;
+  }
+  #hud{display:flex;gap:12px;align-items:center}
+  #score{font-weight:700}
+  #restart{background:#10b981;border:0;color:white;padding:6px 10px;border-radius:6px;cursor:pointer}
+  #canvas-container{width:100%;height:100vh;display:block}
+  a.small{color:#88f;text-decoration:none;font-size:12px;margin-left:8px}
+</style>
+</head>
+<body>
+  <div id="overlay">
+    <div id="hud">
+      <div id="score">Time: 0s</div>
+      <div id="info">Use A / D to move, Space to jump</div>
+      <button id="restart">Restart</button>
+    </div>
+  </div>
+  <div id="canvas-container"></div>
+
+  <!-- Three.js CDN -->
+  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+
+  <script>
+  // ======= Simple 3D Endless Runner (Three.js) =======
+  // Single-file demo. Tweak constants below.
+
+  // CONFIG
+  const CONFIG = {
+    playerSize: 1.2,
+    laneWidth: 2.5,
+    lanes: 3,
+    gravity: -30,
+    jumpSpeed: 10,
+    forwardSpeed: 12,
+    obstacleSpeed: 12,
+    spawnInterval: 1000, // ms
+    obstacleSize: 1.4,
+    worldDepth: 200,
+  };
+
+  // Scene & renderer
+  const container = document.getElementById('canvas-container');
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x0b1220, 0.015);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  container.appendChild(renderer.domElement);
+
+  // Camera
+  const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 500);
+  camera.position.set(0, 4.0, 7);
+
+  // Lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444466, 1.0);
+  hemi.position.set(0, 50, 0);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xfff8e8, 0.6);
+  dir.position.set(-10, 20, 10);
+  scene.add(dir);
+
+  // Ground
+  const groundGeo = new THREE.PlaneGeometry(1000, CONFIG.worldDepth, 10, 10);
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x3b6b3b });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.z = -CONFIG.worldDepth/2 + 20;
+  scene.add(ground);
+
+  // Road stripes to give motion feeling
+  const stripeGeo = new THREE.BoxGeometry(CONFIG.laneWidth * CONFIG.lanes, 0.01, 4);
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
+  const stripes = [];
+  for(let i=0;i<200;i++){
+    const s = new THREE.Mesh(stripeGeo, stripeMat);
+    s.position.set(0, 0.01, -i*4);
+    s.visible = true; s.material.transparent = true; s.material.opacity = 0.15;
+    scene.add(s); stripes.push(s);
+  }
+
+  // Player (a colored cube)
+  const playerGeo = new THREE.BoxGeometry(CONFIG.playerSize, CONFIG.playerSize, CONFIG.playerSize);
+  const playerMat = new THREE.MeshStandardMaterial({ color: 0x10b981 });
+  const playerMesh = new THREE.Mesh(playerGeo, playerMat);
+  playerMesh.castShadow = true;
+  scene.add(playerMesh);
+
+  // Lanes X positions
+  const lanesX = [];
+  const half = (CONFIG.lanes - 1) / 2;
+  for(let i=0;i<CONFIG.lanes;i++) lanesX.push((i - half) * CONFIG.laneWidth);
+
+  // Initial player state
+  let player = {
+    lane: 1, // middle lane index (0..lanes-1)
+    x: lanesX[1],
+    y: 0,
+    vy: 0,
+    grounded: true,
+    mesh: playerMesh,
+  };
+  playerMesh.position.set(player.x, CONFIG.playerSize/2 + player.y, 0);
+
+  // Obstacles array
+  const obstacles = [];
+
+  // Simple rectangular bounding boxes for collision
+  function computeBox(obj){
+    const box = new THREE.Box3().setFromObject(obj);
+    return box;
+  }
+
+  // Spawn obstacle
+  function spawnObstacle(){
+    const kind = Math.random() < 0.1 ? 'tall' : 'box';
+    const laneIndex = Math.floor(Math.random()*CONFIG.lanes);
+    const x = lanesX[laneIndex];
+    const z = - (camera.position.z + 30); // spawn ahead
+    const size = CONFIG.obstacleSize * (kind === 'tall' ? 1.6 : 1.0);
+    const geo = new THREE.BoxGeometry(size, size, size);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xd90429 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, size/2, z - Math.random()*30);
+    scene.add(mesh);
+    obstacles.push({ mesh, laneIndex, size });
+  }
+
+  // Controls
+  const keys = { left:false, right:false, jump:false };
+  window.addEventListener('keydown', e=>{
+    if(e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = true;
+    if(e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = true;
+    if(e.code === 'Space') keys.jump = true;
+  });
+  window.addEventListener('keyup', e=>{
+    if(e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = false;
+    if(e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = false;
+    if(e.code === 'Space') keys.jump = false;
+  });
+
+  // HUD + restart
+  const scoreEl = document.getElementById('score');
+  const restartBtn = document.getElementById('restart');
+  let startTime = performance.now();
+  let lastSpawnTime = 0;
+  let running = true;
+
+  restartBtn.addEventListener('click', ()=>{
+    resetGame();
+  });
+
+  function resetGame(){
+    // remove obstacles
+    obstacles.forEach(o=> scene.remove(o.mesh));
+    obstacles.length = 0;
+    player.lane = Math.floor(CONFIG.lanes/2);
+    player.x = lanesX[player.lane];
+    player.y = 0; player.vy = 0; player.grounded = true;
+    player.mesh.position.set(player.x, CONFIG.playerSize/2, 0);
+    startTime = performance.now();
+    lastSpawnTime = 0;
+    running = true;
+  }
+
+  // Resize handling
+  window.addEventListener('resize', onWindowResize);
+  function onWindowResize(){
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+  }
+  onWindowResize();
+
+  // Main loop
+  function animate(t){
+    requestAnimationFrame(animate);
+    if(!running) { renderer.render(scene, camera); return; }
+
+    const dt = Math.min(0.06, (t - (player._lastT||t)) / 1000); // seconds
+    player._lastT = t;
+
+    // Spawn obstacles
+    if(t - lastSpawnTime > CONFIG.spawnInterval){
+      spawnObstacle();
+      lastSpawnTime = t;
+    }
+
+    // Update stripes (visual motion)
+    for(let i=0;i<stripes.length;i++){
+      stripes[i].position.z += CONFIG.forwardSpeed * dt;
+      if(stripes[i].position.z > 10){
+        stripes[i].position.z -= stripes.length * 4;
+      }
+    }
+
+    // Player lateral movement (smooth)
+    if(keys.left){
+      player.lane = Math.max(0, player.lane - 1);
+      keys.left = false; // single step per key press
+    } else if(keys.right){
+      player.lane = Math.min(CONFIG.lanes - 1, player.lane + 1);
+      keys.right = false;
+    }
+    // smoothly interpolate X to lane
+    const targetX = lanesX[player.lane];
+    player.x += (targetX - player.x) * Math.min(1, 10 * dt);
+    // Jump
+    if(keys.jump && player.grounded){
+      player.vy = CONFIG.jumpSpeed;
+      player.grounded = false;
+    }
+    // gravity
+    player.vy += CONFIG.gravity * dt;
+    player.y += player.vy * dt;
+    if(player.y <= 0){
+      player.y = 0;
+      player.vy = 0;
+      player.grounded = true;
+    }
+    // update player mesh
+    player.mesh.position.set(player.x, CONFIG.playerSize/2 + player.y, 0);
+
+    // Move obstacles toward player and collision
+    for(let i = obstacles.length - 1; i >= 0; i--){
+      const ob = obstacles[i];
+      ob.mesh.position.z += CONFIG.obstacleSpeed * dt;
+      // if passed behind camera, remove
+      if(ob.mesh.position.z > camera.position.z + 10){
+        scene.remove(ob.mesh);
+        obstacles.splice(i,1);
+        continue;
+      }
+      // collision
+      const boxPlayer = new THREE.Box3().setFromObject(player.mesh);
+      const boxObs = new THREE.Box3().setFromObject(ob.mesh);
+      if(boxPlayer.intersectsBox(boxObs)){
+        // hit — stop, show score, and stop running
+        running = false;
+        const elapsed = Math.floor((t - startTime)/1000);
+        scoreEl.textContent = `Time: ${elapsed}s  —  GAME OVER`;
+        break;
+      }
+    }
+
+    // camera follow slightly behind and above player
+    camera.position.x += (player.x - camera.position.x) * 8 * dt;
+    camera.position.y += ((CONFIG.playerSize*2.2 + player.y) - camera.position.y) * 6 * dt;
+    camera.position.z += ((7) - camera.position.z) * 6 * dt;
+    camera.lookAt(player.mesh.position.x, player.mesh.position.y + 1.0, player.mesh.position.z - 8);
+
+    // update score
+    const elapsed = Math.floor((t - startTime)/1000);
+    if(running) scoreEl.textContent = `Time: ${elapsed}s`;
+
+    renderer.render(scene, camera);
+  }
+
+  // Start
+  startTime = performance.now();
+  requestAnimationFrame(animate);
+
+  // Basic touch controls (tap left/right halves to move; double-tap for jump)
+  let lastTap = 0;
+  container.addEventListener('touchstart', (ev)=>{
+    const x = ev.touches[0].clientX;
+    const width = container.clientWidth;
+    const now = performance.now();
+    if(now - lastTap < 300){
+      // double tap => jump
+      if(player.grounded){ player.vy = CONFIG.jumpSpeed; player.grounded=false; }
+    } else {
+      if(x < width/2) { player.lane = Math.max(0, player.lane - 1); }
+      else { player.lane = Math.min(CONFIG.lanes - 1, player.lane + 1); }
+    }
+    lastTap = now;
+  });
+
+  // initial camera positioning tweak
+  camera.position.set(0, 4.0, 7);
+  camera.lookAt(player.mesh.position);
+
+  // expose reset for console debugging
+  window._reset3dRunner = resetGame;
+  </script>
+</body>
+</html>
